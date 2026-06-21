@@ -1,0 +1,5 @@
+string dock_id
+string uav_id
+---
+bool accepted
+string reason

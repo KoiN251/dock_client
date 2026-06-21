@@ -1,0 +1,8 @@
+string dock_id
+string uav_id
+bool request_gps
+---
+bool accepted
+string reason
+string gps_topic
+string contact_topic

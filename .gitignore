@@ -1,0 +1,21 @@
+# ROS 2 / colcon generated artifacts
+build/
+install/
+log/
+
+# Python generated artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+*~

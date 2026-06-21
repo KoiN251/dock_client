@@ -1,0 +1,12 @@
+uav:
+  id: uav_01
+
+dock:
+  target_id: dock_01
+
+heartbeat:
+  publish_hz: 1.0
+
+zenoh:
+  root: ctuav
+  mode: peer

@@ -1,0 +1,20 @@
+{
+  // UAV bridge chạy peer mode và connect trực tiếp tới Dock NetBird IP.
+  mode: "peer",
+
+  // TCP endpoint is supplied by scripts/run_bridge_uav.sh.
+
+  // Tắt multicast scouting để chắc chắn dùng NetBird endpoint.
+  scouting: {
+    multicast: {
+      enabled: false,
+    },
+  },
+
+  plugins: {
+    ros2dds: {
+      domain: 42,
+      ros_automatic_discovery_range: "LOCALHOST",
+    },
+  },
+}
