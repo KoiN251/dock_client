@@ -312,9 +312,6 @@ class UavDockClientNode(Node):
         ):
             self.last_beacon_log_monotonic = now
             state = msg.state
-            covariance = ', '.join(
-                f'{value:.3f}' for value in gps.position_covariance
-            )
             self.get_logger().info(
                 f'[HEARTBEAT RX] DOCK GPS FULL\n'
                 f'  identity: version={gps.interface_version} dock_id={gps.dock_id} '
@@ -324,12 +321,9 @@ class UavDockClientNode(Node):
                 f'  velocity_ned: n={gps.vel_n_m_s:.3f} e={gps.vel_e_m_s:.3f} '
                 f'd={gps.vel_d_m_s:.3f}m/s\n'
                 f'  heading: deg={gps.heading_deg:.3f} valid={gps.heading_valid}\n'
-                f'  quality: fix_type={gps.fix_type} sats={gps.satellites_used} '
-                f'eph={gps.eph_m:.3f}m epv={gps.epv_m:.3f}m '
-                f's_variance={gps.s_variance_m_s:.3f}m/s\n'
-                f'  validity: gps_ok={gps.gps_ok} velocity={gps.velocity_valid} '
-                f'covariance={gps.covariance_valid} source={gps.source_type}\n'
-                f'  covariance: type={gps.covariance_type} values=[{covariance}]\n'
+                f'  quality: fix_type={gps.fix_type} eph={gps.eph_m:.3f}m '
+                f'epv={gps.epv_m:.3f}m\n'
+                f'  validity: gps_ok={gps.gps_ok} velocity={gps.velocity_valid}\n'
                 f'  dock_state: version={state.interface_version} seq={state.seq} '
                 f'stamp={state.stamp_unix:.3f} state={state.state} '
                 f'available={state.available} reserved={state.reserved_uav_id} '

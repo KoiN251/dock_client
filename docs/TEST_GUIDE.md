@@ -1,5 +1,8 @@
 # CTUAV Dock–UAV MVP Test Guide
 
+> `DockGps` v2 thay đổi type hash. Sau khi pull phải xóa `build/install/log` và
+> build lại cả workspace Dock lẫn UAV trước khi chạy Zenoh bridge.
+
 Hướng dẫn end-to-end chính được lưu cùng source Dock để tránh hai bản tài liệu
 bị lệch nhau:
 

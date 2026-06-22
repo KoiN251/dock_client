@@ -12,7 +12,7 @@ UAV:  ctuav_uav_dock_client trên laptop/companion
 
 ```text
 DOCK
-fake/real GPS → GPS filter → DockBeacon ───────┐
+GPSD input + filter node → DockGps → DockBeacon ┐
                                                │
 state manager → DockState ─────────────────────┤
 contact sensor → DockContact ──────────────────┤
