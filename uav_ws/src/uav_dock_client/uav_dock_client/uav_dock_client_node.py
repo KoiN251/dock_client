@@ -36,6 +36,7 @@ class UavDockClientNode(Node):
         self.declare_parameter('heartbeat_hz', 1.0)
         self.declare_parameter('battery_percent', 80.0)
         self.declare_parameter('gps_hz', 1.0)
+        self.declare_parameter('heartbeat_log_period_s', 10.0)
         self.declare_parameter('latitude_deg', 10.7755000)
         self.declare_parameter('longitude_deg', 106.6995000)
         self.declare_parameter('altitude_m', 30.0)
@@ -49,6 +50,9 @@ class UavDockClientNode(Node):
         self.heartbeat_hz = float(self.get_parameter('heartbeat_hz').value)
         self.battery_percent = float(self.get_parameter('battery_percent').value)
         self.gps_hz = float(self.get_parameter('gps_hz').value)
+        self.heartbeat_log_period_s = float(
+            self.get_parameter('heartbeat_log_period_s').value
+        )
 
         # =========================
         # Runtime state
@@ -57,6 +61,8 @@ class UavDockClientNode(Node):
         self.request_enabled = False
         self.request_in_flight = False
         self.last_request_time = 0.0
+        self.last_beacon_log_monotonic = None
+        self.last_contact_state = None
 
         self.uav_state = UavStatus.IDLE
         self.seq = 0
@@ -299,20 +305,37 @@ class UavDockClientNode(Node):
           - Dock state
         """
         gps = msg.gps
-        state = msg.state
-        cov = gps.position_covariance
-
-        self.get_logger().info(
-            f'DockBeacon gps_seq={gps.seq} '
-            f'lat={gps.latitude_deg:.7f} lon={gps.longitude_deg:.7f} '
-            f'alt={gps.altitude_m:.2f} '
-            f'velN={gps.vel_n_m_s:.2f} velE={gps.vel_e_m_s:.2f} velD={gps.vel_d_m_s:.2f} '
-            f'heading={gps.heading_deg:.2f} heading_valid={gps.heading_valid} '
-            f'eph={gps.eph_m:.2f} epv={gps.epv_m:.2f} '
-            f'cov_diag=[{cov[0]:.3f}, {cov[4]:.3f}, {cov[8]:.3f}] '
-            f'cov_type={gps.covariance_type} cov_valid={gps.covariance_valid} '
-            f'dock_state={state.state}'
-        )
+        now = time.monotonic()
+        if (
+            self.last_beacon_log_monotonic is None
+            or now - self.last_beacon_log_monotonic >= self.heartbeat_log_period_s
+        ):
+            self.last_beacon_log_monotonic = now
+            state = msg.state
+            covariance = ', '.join(
+                f'{value:.3f}' for value in gps.position_covariance
+            )
+            self.get_logger().info(
+                f'[HEARTBEAT RX] DOCK GPS FULL\n'
+                f'  identity: version={gps.interface_version} dock_id={gps.dock_id} '
+                f'seq={gps.seq} stamp={gps.stamp_unix:.3f}\n'
+                f'  position: lat={gps.latitude_deg:.7f} '
+                f'lon={gps.longitude_deg:.7f} alt={gps.altitude_m:.3f}m\n'
+                f'  velocity_ned: n={gps.vel_n_m_s:.3f} e={gps.vel_e_m_s:.3f} '
+                f'd={gps.vel_d_m_s:.3f}m/s\n'
+                f'  heading: deg={gps.heading_deg:.3f} valid={gps.heading_valid}\n'
+                f'  quality: fix_type={gps.fix_type} sats={gps.satellites_used} '
+                f'eph={gps.eph_m:.3f}m epv={gps.epv_m:.3f}m '
+                f's_variance={gps.s_variance_m_s:.3f}m/s\n'
+                f'  validity: gps_ok={gps.gps_ok} velocity={gps.velocity_valid} '
+                f'covariance={gps.covariance_valid} source={gps.source_type}\n'
+                f'  covariance: type={gps.covariance_type} values=[{covariance}]\n'
+                f'  dock_state: version={state.interface_version} seq={state.seq} '
+                f'stamp={state.stamp_unix:.3f} state={state.state} '
+                f'available={state.available} reserved={state.reserved_uav_id} '
+                f'gps_ok={state.gps_ok} hardware_ok={state.hardware_ok} '
+                f'reason={state.reason}'
+            )
 
     def on_contact(self, msg: DockContact):
         """
@@ -320,12 +343,17 @@ class UavDockClientNode(Node):
         """
         if not msg.valid:
             return
+        if msg.dock_id != self.dock_id or msg.uav_id != self.uav_id:
+            return
 
-        self.get_logger().info(
-            f'DockContact contact={msg.contact}, sensor={msg.sensor_id}'
-        )
+        contact = bool(msg.contact)
+        if contact != self.last_contact_state:
+            self.last_contact_state = contact
+            self.get_logger().info(
+                f'DockContact changed contact={contact}, sensor={msg.sensor_id}'
+            )
 
-        if msg.contact and msg.uav_id == self.uav_id:
+        if contact and self.uav_state != UavStatus.CONTACTED:
             self.uav_state = UavStatus.CONTACTED
             self.get_logger().info('UAV state -> CONTACTED by DockContact')
 
@@ -345,11 +373,7 @@ class UavDockClientNode(Node):
         msg.accepted_by_dock = bool(self.accepted)
 
         self.status_pub.publish(msg)
-
-        self.get_logger().info(
-            f'UavStatus seq={self.seq} '
-            f'state={msg.uav_state} accepted={msg.accepted_by_dock}'
-        )
+        # Không log từng status heartbeat; Dock vẫn giám sát timeout.
 
         self.seq += 1
 
@@ -387,10 +411,7 @@ class UavDockClientNode(Node):
         msg.covariance_valid = True
         msg.source_type = 'fake'
         self.gps_pub.publish(msg)
-        self.get_logger().info(
-            f'UavGps seq={msg.seq} lat={msg.latitude_deg:.7f} '
-            f'lon={msg.longitude_deg:.7f} alt={msg.altitude_m:.2f}'
-        )
+        # Không log từng GPS heartbeat; Dock log dữ liệu nhận theo chu kỳ.
         self.gps_seq += 1
 
 
