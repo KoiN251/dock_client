@@ -4,7 +4,7 @@ uav_dock_client_node
 
 Vai trò:
   - Publish UAV heartbeat/status
-  - Gửi request tới Dock qua ReserveDock.srv
+  - Nhận command local để bật/tắt chu trình request Dock
   - Subscribe DockState từ đầu
   - Nếu DockState báo reserved_uav_id == uav_id thì tự accepted=True
   - Sau khi accepted thì subscribe DockBeacon và DockContact
@@ -54,7 +54,7 @@ class UavDockClientNode(Node):
         # Runtime state
         # =========================
         self.accepted = False
-        self.auto_request_enabled = True
+        self.request_enabled = False
         self.request_in_flight = False
         self.last_request_time = 0.0
 
@@ -80,6 +80,11 @@ class UavDockClientNode(Node):
         self.release_client = self.create_client(
             ReleaseDock,
             f'/dock/{self.dock_id}/release',
+        )
+        self.request_command_srv = self.create_service(
+            Trigger,
+            f'/uav/{self.uav_id}/request_dock',
+            self.on_request_command,
         )
         self.release_command_srv = self.create_service(
             Trigger,
@@ -119,24 +124,36 @@ class UavDockClientNode(Node):
         self.get_logger().info(f'  dock_id={self.dock_id}')
         self.get_logger().info(f'  state_topic={self.state_topic}')
         self.get_logger().info(f'  reserve_service=/dock/{self.dock_id}/reserve')
+        self.get_logger().info(
+            f'  request_command=/uav/{self.uav_id}/request_dock'
+        )
+
+    def on_request_command(self, _req, resp):
+        """Enable the reserve state machine; its timer handles wait/retry."""
+        self.request_enabled = True
+        if self.accepted:
+            resp.success = True
+            resp.message = 'Request enabled; UAV is already accepted by Dock'
+            return resp
+
+        # Thử ngay khi user kích request; timer tiếp tục wait/retry sau đó.
+        self.request_dock_if_needed()
+        resp.success = True
+        resp.message = 'Dock request state machine enabled'
+        return resp
 
     def request_dock_if_needed(self):
-        """
-        Gửi request tới Dock nếu chưa accepted.
-
-        Không phụ thuộc tuyệt đối vào service response.
-        Nếu service response bị treo, DockState callback vẫn có thể set accepted=True.
-        """
-        if self.accepted or not self.auto_request_enabled:
+        """Wait for Dock and retry ReserveDock while request_enabled is true."""
+        if self.accepted or not self.request_enabled:
             return
 
         now = time.time()
 
-        # Nếu request trước bị treo quá 3 giây thì cho retry.
+        # Request đang chạy thì chờ tối đa 3 giây trước khi cho phép retry.
         if self.request_in_flight and (now - self.last_request_time) < 3.0:
             return
 
-        if self.request_in_flight and (now - self.last_request_time) >= 3.0:
+        if self.request_in_flight:
             self.get_logger().warn('Reserve request timeout, retrying...')
             self.request_in_flight = False
 
@@ -187,8 +204,8 @@ class UavDockClientNode(Node):
         self.activate_dock_session(reason='reserve_response accepted=true')
 
     def on_release_command(self, _req, resp):
-        """Stop auto-request and send ReleaseDock to the remote Dock."""
-        self.auto_request_enabled = False
+        """Disable future reserve retries, then send ReleaseDock."""
+        self.request_enabled = False
         if not self.release_client.wait_for_service(timeout_sec=0.1):
             resp.success = False
             resp.message = 'Dock release service is not available'
@@ -212,8 +229,6 @@ class UavDockClientNode(Node):
         self.get_logger().info(
             f'Release response accepted={response.accepted}, reason={response.reason}'
         )
-        if not response.accepted:
-            self.auto_request_enabled = True
 
     def on_dock_state(self, msg: DockState):
         """

@@ -32,7 +32,8 @@ Luồng session:
 
 ```text
 IDLE
-  → UAV gửi ReserveDock
+  → flight logic/operator gọi /uav/uav_01/request_dock
+  → bật request_enabled, UAV chờ/gửi/retry ReserveDock
   → REQUESTING_DOCK
   → DockState RESERVED cho uav_01
   → APPROACHING_DOCK
@@ -40,7 +41,7 @@ IDLE
   → DockContact true
   → CONTACTED
   → contact false + ReleaseDock
-  → IDLE, không tự request lại
+  → IDLE, request_enabled=false
 ```
 
 `CONTACTED` chỉ có nghĩa UAV chạm landing pad. Nó không thay thế xác nhận
@@ -107,14 +108,8 @@ self.dock_state_sub = self.create_subscription(
 
 Mỗi message mới sẽ gọi `on_dock_state(msg)`.
 
-```python
-self.request_timer = self.create_timer(
-    1.0,
-    self.request_dock_if_needed,
-)
-```
-
-Timer gọi callback mỗi giây.
+Service local `/uav/<uav_id>/request_dock` dùng `std_srvs/srv/Trigger`. Callback
+bật flag `request_enabled`. Timer chỉ chạy logic chờ/gửi/retry khi flag này bật.
 
 Python không yêu cầu `else: return` ở cuối một `if`; khi tới cuối hàm, hàm tự
 kết thúc. Early return nên dùng để loại input không hợp lệ trước.
@@ -191,18 +186,19 @@ Parameter có thể đổi bằng `--ros-args -p name:=value` mà không sửa s
 
 ```text
 accepted             Dock đã dành cho UAV.
-auto_request_enabled Cho phép tự request.
+request_enabled      User/flight logic đã cho phép tìm và reserve Dock.
 request_in_flight    Đang chờ service response.
-last_request_time    Dùng để retry sau timeout.
+last_request_time    Dùng để retry request bị treo sau 3 giây.
 uav_state            State hiện tại của UAV client.
 seq/gps_seq          Sequence độc lập cho status và GPS.
 ```
 
-### Tự request
+### Request theo command
 
-Timer chạy mỗi giây. Nếu chưa accepted và auto-request đang bật, client chờ
-service rồi gửi `ReserveDock` bất đồng bộ bằng `call_async`. Nếu request không
-hoàn tất sau 3 giây, client cho phép retry.
+Client không request khi vừa start. Flight logic hoặc operator gọi service local
+`/uav/<uav_id>/request_dock` để bật flag. Client thử ngay, sau đó timer mỗi giây
+tiếp tục chờ service và retry request bị treo quá 3 giây. Response bị reject cũng
+được thử lại khi timer chạy tiếp. Gọi release sẽ tắt flag.
 
 ### Xác nhận accepted
 
@@ -234,11 +230,16 @@ ngày càng lớn.
 Khi `contact=true`, đúng UAV và message valid, client chuyển sang
 `UavStatus.CONTACTED`. Không dùng contact đơn lẻ để khẳng định landed/disarmed.
 
-### Release
+### Request và release
 
-Script release gọi service cục bộ `/uav/<uav_id>/release_dock`. Client tắt
-auto-request trước rồi mới gọi remote `ReleaseDock`. Điều này ngăn UAV reserve
-lại ngay khi Dock trở về `IDLE`.
+Hai script gọi hai service cục bộ. Request bật state machine; release tắt nó
+trước khi gửi remote `ReleaseDock`. Sau này flight logic có thể gọi chính các
+service này khi nhận flag request/release:
+
+```text
+/uav/<uav_id>/request_dock
+/uav/<uav_id>/release_dock
+```
 
 ## 6. Zenoh
 
@@ -277,6 +278,12 @@ Terminal client:
 
 ```bash
 ./scripts/run_ros_uav_client.sh uav_01 dock_01
+```
+
+Phát một request Dock:
+
+```bash
+./scripts/run_ros_uav_request.sh uav_01
 ```
 
 Release sau khi Dock contact đã reset false:
