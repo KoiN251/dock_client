@@ -3,6 +3,8 @@
 Tài liệu kiến trúc, pipeline, giải thích Python/ROS 2 và hướng dẫn maintain:
 [docs/README.md](docs/README.md).
 
+Hướng dẫn test end-to-end: [docs/TEST_GUIDE.md](docs/TEST_GUIDE.md).
+
 Source này chạy trên UAV companion/laptop.
 
 Nhiệm vụ:
