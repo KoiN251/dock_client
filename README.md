@@ -3,7 +3,21 @@
 Tài liệu kiến trúc, pipeline, giải thích Python/ROS 2 và hướng dẫn maintain:
 [docs/README.md](docs/README.md).
 
+Thứ tự đọc khuyến nghị:
+
+1. Đọc pipeline và state trong [docs/README.md](docs/README.md).
+2. Mở `uav_dock_client_node.py` và theo callback map trong tài liệu.
+3. Dùng [docs/TEST_GUIDE.md](docs/TEST_GUIDE.md) để quan sát cùng dữ liệu trên
+   topic trước khi sửa logic.
+
+Lưu đồ Mermaid của client:
+[flow đầy đủ](docs/UAV_CLIENT_FLOW.mmd) và
+[state machine](docs/UAV_CLIENT_STATE.mmd).
+
 Hướng dẫn test end-to-end: [docs/TEST_GUIDE.md](docs/TEST_GUIDE.md).
+
+Hướng dẫn cài lên thiết bị mới:
+[docs/INSTALL_NEW_DEVICE.md](docs/INSTALL_NEW_DEVICE.md).
 
 Source này chạy trên UAV companion/laptop.
 

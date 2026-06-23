@@ -8,7 +8,19 @@ Dock: mobile_dock trên Raspberry Pi 5
 UAV:  ctuav_uav_dock_client trên laptop/companion
 ```
 
+Tài liệu liên quan:
+
+- [INSTALL_NEW_DEVICE.md](INSTALL_NEW_DEVICE.md): cài client lên máy UAV mới.
+- [TEST_GUIDE.md](TEST_GUIDE.md): lệnh test end-to-end.
+- [UAV_CLIENT_FLOW.mmd](UAV_CLIENT_FLOW.mmd): lưu đồ thuật toán client.
+
 ## 1. Pipeline end-to-end
+
+File Mermaid có thể render trực tiếp:
+
+- [UAV_CLIENT_FLOW.mmd](UAV_CLIENT_FLOW.mmd): lưu đồ thuật toán request, retry,
+  session và release đầy đủ.
+- [UAV_CLIENT_STATE.mmd](UAV_CLIENT_STATE.mmd): state machine rút gọn.
 
 ```text
 DOCK
@@ -169,6 +181,31 @@ Dock từ chối release nếu contact sensor vẫn active. Reset contact trư�
 release.
 
 ## 5. uav_dock_client_node.py
+
+### Callback map
+
+Đây là bản đồ ngắn để lần theo code thay vì đọc từ trên xuống dưới:
+
+```text
+request_dock service
+  → on_request_command()
+  → request_dock_if_needed()
+  → on_reserve_response()
+  → activate_dock_session()
+
+DockState topic
+  → on_dock_state()
+  → activate_dock_session() hoặc trả UAV về IDLE
+
+DockBeacon topic → on_beacon()
+DockContact topic → on_contact()
+heartbeat timer → publish_status()
+GPS timer → publish_gps()       # hiện là fake, accepted mới phát
+release_dock service → on_release_command() → on_release_response()
+```
+
+Các callback không được user gọi trực tiếp. `rclpy.spin()` gọi chúng khi service,
+topic hoặc timer tương ứng có sự kiện.
 
 ### Parameters
 

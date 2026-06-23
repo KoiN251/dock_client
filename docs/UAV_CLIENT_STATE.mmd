@@ -1,0 +1,14 @@
+%% CTUAV UAV Dock Client state machine (short form)
+
+stateDiagram-v2
+    [*] --> IDLE
+
+    IDLE --> REQUESTING_DOCK: User kích request_dock
+    REQUESTING_DOCK --> REQUESTING_DOCK: Service chưa có / reject / timeout retry
+    REQUESTING_DOCK --> APPROACHING_DOCK: Response accepted hoặc DockState RESERVED
+    APPROACHING_DOCK --> CONTACTED: DockContact true hoặc DockState CONTACTED
+    CONTACTED --> IDLE: Contact false và ReleaseDock accepted
+
+    APPROACHING_DOCK --> IDLE: DockState IDLE
+    REQUESTING_DOCK --> IDLE: User kích release_dock
+

@@ -1,0 +1,66 @@
+%% CTUAV UAV Dock Client algorithm flow
+%% Render with Mermaid CLI, Mermaid Live Editor, GitHub or a compatible editor.
+
+flowchart TD
+    START([Khởi động UAV Client]) --> INIT["Khởi tạo:<br/>accepted = false<br/>request_enabled = false<br/>request_in_flight = false<br/>uav_state = IDLE"]
+
+    INIT --> SUB_STATE["Subscribe DockState"]
+    SUB_STATE --> WAIT{"Chờ sự kiện ROS"}
+
+    WAIT -->|Timer 1 Hz| STATUS["Publish UavStatus"]
+    STATUS --> WAIT
+
+    WAIT -->|User gọi request_dock| ENABLE["request_enabled = true"]
+    ENABLE --> CHECK_ACCEPTED{"accepted?"}
+
+    CHECK_ACCEPTED -->|Có| ALREADY["Trả về: UAV đã được Dock accept"]
+    ALREADY --> WAIT
+
+    CHECK_ACCEPTED -->|Không| REQUEST_CHECK["request_dock_if_needed()"]
+
+    REQUEST_CHECK --> ENABLED{"request_enabled?"}
+    ENABLED -->|Không| WAIT
+    ENABLED -->|Có| ACCEPTED_CHECK{"accepted?"}
+    ACCEPTED_CHECK -->|Có| WAIT
+    ACCEPTED_CHECK -->|Không| IN_FLIGHT{"request_in_flight?"}
+
+    IN_FLIGHT -->|Không| SERVICE_CHECK
+    IN_FLIGHT -->|Có| TIMEOUT{"Đã quá 3 giây?"}
+    TIMEOUT -->|Chưa| WAIT
+    TIMEOUT -->|Rồi| RESET_REQUEST["request_in_flight = false"]
+    RESET_REQUEST --> SERVICE_CHECK
+
+    SERVICE_CHECK{"ReserveDock service<br/>đã sẵn sàng?"}
+    SERVICE_CHECK -->|Không| WAIT
+    SERVICE_CHECK -->|Có| SEND_REQUEST["Tạo ReserveDock request:<br/>dock_id<br/>uav_id<br/>request_gps = true"]
+
+    SEND_REQUEST --> REQUESTING["request_in_flight = true<br/>uav_state = REQUESTING_DOCK"]
+    REQUESTING --> ASYNC["Gửi call_async()"]
+    ASYNC --> WAIT_RESPONSE{"Chờ response hoặc DockState"}
+
+    WAIT_RESPONSE -->|Response reject hoặc lỗi| REJECT["request_in_flight = false"]
+    REJECT --> WAIT
+
+    WAIT_RESPONSE -->|Response accepted| ACTIVATE
+    WAIT_RESPONSE -->|DockState RESERVED<br/>đúng uav_id| ACTIVATE
+
+    ACTIVATE["activate_dock_session()<br/>accepted = true<br/>request_in_flight = false<br/>uav_state = APPROACHING_DOCK"]
+    ACTIVATE --> SUB_SESSION["Subscribe DockBeacon<br/>Subscribe DockContact"]
+    SUB_SESSION --> ACTIVE([Session với Dock đang hoạt động])
+
+    ACTIVE -->|GPS timer| UAV_GPS["Publish UavGps"]
+    UAV_GPS --> ACTIVE
+
+    ACTIVE -->|Nhận DockBeacon| BEACON["Kiểm tra/log GPS và state Dock"]
+    BEACON --> ACTIVE
+
+    ACTIVE -->|DockContact = true| CONTACTED["uav_state = CONTACTED"]
+    CONTACTED --> ACTIVE
+
+    ACTIVE -->|User gọi release_dock| DISABLE["request_enabled = false"]
+    DISABLE --> SEND_RELEASE["Gửi ReleaseDock"]
+    SEND_RELEASE --> WAIT_IDLE{"Chờ DockState"}
+
+    WAIT_IDLE -->|DockState IDLE| RESET["accepted = false<br/>request_in_flight = false<br/>uav_state = IDLE"]
+    RESET --> WAIT
+

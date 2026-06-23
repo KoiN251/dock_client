@@ -117,11 +117,11 @@ class UavDockClientNode(Node):
             self.on_dock_state,
             10,
         )
-
+# Timers
         self.request_timer = self.create_timer(1.0, self.request_dock_if_needed)
         self.heartbeat_timer = self.create_timer(
             1.0 / self.heartbeat_hz,
-            self.publish_status,
+            self.publish_status, # Publish heartbeat/status của UAV
         )
         self.gps_timer = self.create_timer(1.0 / self.gps_hz, self.publish_gps)
 
@@ -158,11 +158,11 @@ class UavDockClientNode(Node):
         # Request đang chạy thì chờ tối đa 3 giây trước khi cho phép retry.
         if self.request_in_flight and (now - self.last_request_time) < 3.0:
             return
-
+# Check if the request has timed out
         if self.request_in_flight:
             self.get_logger().warn('Reserve request timeout, retrying...')
             self.request_in_flight = False
-
+# Send ReserveDock request
         if not self.reserve_client.wait_for_service(timeout_sec=0.1):
             self.get_logger().warn('Waiting for reserve service...')
             return
