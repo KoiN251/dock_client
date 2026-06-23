@@ -1,0 +1,4 @@
+[submodule "uav_ws/src/px4_msgs"]
+	path = uav_ws/src/px4_msgs
+	url = https://github.com/PX4/px4_msgs.git
+	branch = release/1.17

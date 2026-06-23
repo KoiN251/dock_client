@@ -14,13 +14,16 @@ Lý do thiết kế:
   - DockState topic là source-of-truth vì publish liên tục.
 """
 
+import math
 import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 from dock_interfaces.msg import DockBeacon, DockContact, DockState, UavGps, UavStatus
 from dock_interfaces.srv import ReleaseDock, ReserveDock
+from px4_msgs.msg import BatteryStatus, VehicleGlobalPosition, VehicleLocalPosition
 from std_srvs.srv import Trigger
 
 
@@ -40,16 +43,26 @@ class UavDockClientNode(Node):
         self.declare_parameter('latitude_deg', 10.7755000)
         self.declare_parameter('longitude_deg', 106.6995000)
         self.declare_parameter('altitude_m', 30.0)
-        self.declare_parameter('vel_n_m_s', 0.0)
-        self.declare_parameter('vel_e_m_s', 0.0)
-        self.declare_parameter('vel_d_m_s', 0.0)
         self.declare_parameter('heading_deg', 0.0)
+        self.declare_parameter('px4_data_timeout_s', 2.0)
+        self.declare_parameter('px4_battery_topic', '/fmu/out/battery_status')
+        self.declare_parameter(
+            'px4_global_position_topic',
+            '/fmu/out/vehicle_global_position',
+        )
+        self.declare_parameter(
+            'px4_local_position_topic',
+            '/fmu/out/vehicle_local_position',
+        )
 
         self.uav_id = self.get_parameter('uav_id').value
         self.dock_id = self.get_parameter('dock_id').value
         self.heartbeat_hz = float(self.get_parameter('heartbeat_hz').value)
         self.battery_percent = float(self.get_parameter('battery_percent').value)
         self.gps_hz = float(self.get_parameter('gps_hz').value)
+        self.px4_data_timeout_s = float(
+            self.get_parameter('px4_data_timeout_s').value
+        )
         self.heartbeat_log_period_s = float(
             self.get_parameter('heartbeat_log_period_s').value
         )
@@ -63,6 +76,12 @@ class UavDockClientNode(Node):
         self.last_request_time = 0.0
         self.last_beacon_log_monotonic = None
         self.last_contact_state = None
+        self.latest_px4_battery_percent = None
+        self.latest_px4_global_position = None
+        self.latest_px4_local_position = None
+        self.last_px4_battery_monotonic = None
+        self.last_px4_global_position_monotonic = None
+        self.last_px4_local_position_monotonic = None
 
         self.uav_state = UavStatus.IDLE
         self.seq = 0
@@ -117,7 +136,26 @@ class UavDockClientNode(Node):
             self.on_dock_state,
             10,
         )
-# Timers
+
+        self.px4_battery_sub = self.create_subscription(
+            BatteryStatus,
+            self.get_parameter('px4_battery_topic').value,
+            self.on_px4_battery,
+            qos_profile_sensor_data,
+        )
+        self.px4_global_position_sub = self.create_subscription(
+            VehicleGlobalPosition,
+            self.get_parameter('px4_global_position_topic').value,
+            self.on_px4_global_position,
+            qos_profile_sensor_data,
+        )
+        self.px4_local_position_sub = self.create_subscription(
+            VehicleLocalPosition,
+            self.get_parameter('px4_local_position_topic').value,
+            self.on_px4_local_position,
+            qos_profile_sensor_data,
+        )
+        # Timers
         self.request_timer = self.create_timer(1.0, self.request_dock_if_needed)
         self.heartbeat_timer = self.create_timer(
             1.0 / self.heartbeat_hz,
@@ -133,6 +171,48 @@ class UavDockClientNode(Node):
         self.get_logger().info(
             f'  request_command=/uav/{self.uav_id}/request_dock'
         )
+        self.get_logger().info(
+            f'  px4_battery_topic={self.get_parameter("px4_battery_topic").value}'
+        )
+        self.get_logger().info(
+            '  px4_global_position_topic='
+            f'{self.get_parameter("px4_global_position_topic").value}'
+        )
+        self.get_logger().info(
+            '  px4_local_position_topic='
+            f'{self.get_parameter("px4_local_position_topic").value}'
+        )
+        self.get_logger().info(f'  px4_data_timeout_s={self.px4_data_timeout_s}')
+
+    def is_px4_fresh(self, last_monotonic):
+        if last_monotonic is None:
+            return False
+        return time.monotonic() - last_monotonic <= self.px4_data_timeout_s
+
+    def on_px4_battery(self, msg: BatteryStatus):
+        """Translate PX4 BatteryStatus.remaining [0..1] into UAV percent."""
+        self.last_px4_battery_monotonic = time.monotonic()
+        remaining = float(msg.remaining)
+        if math.isfinite(remaining) and 0.0 <= remaining <= 1.0:
+            self.latest_px4_battery_percent = remaining * 100.0
+        else:
+            self.latest_px4_battery_percent = math.nan
+
+    def on_px4_global_position(self, msg: VehicleGlobalPosition):
+        """Cache PX4 global position; altitude is AMSL in metres."""
+        self.last_px4_global_position_monotonic = time.monotonic()
+        if bool(msg.lat_lon_valid) and bool(msg.alt_valid):
+            self.latest_px4_global_position = msg
+        else:
+            self.latest_px4_global_position = None
+
+    def on_px4_local_position(self, msg: VehicleLocalPosition):
+        """Cache PX4 local position for heading/yaw."""
+        self.last_px4_local_position_monotonic = time.monotonic()
+        if math.isfinite(float(msg.heading)):
+            self.latest_px4_local_position = msg
+        else:
+            self.latest_px4_local_position = None
 
     def on_request_command(self, _req, resp):
         """Enable the reserve state machine; its timer handles wait/retry."""
@@ -362,8 +442,14 @@ class UavDockClientNode(Node):
         msg.seq = self.seq
         msg.stamp_unix = time.time()
         msg.uav_state = self.uav_state
-        msg.battery_percent = float(self.battery_percent)
-        msg.gps_ok = True
+        if self.is_px4_fresh(self.last_px4_battery_monotonic):
+            msg.battery_percent = float(self.latest_px4_battery_percent)
+        else:
+            msg.battery_percent = math.nan
+        msg.gps_ok = (
+            self.is_px4_fresh(self.last_px4_global_position_monotonic)
+            and self.latest_px4_global_position is not None
+        )
         msg.accepted_by_dock = bool(self.accepted)
 
         self.status_pub.publish(msg)
@@ -372,38 +458,44 @@ class UavDockClientNode(Node):
         self.seq += 1
 
     def publish_gps(self):
-        """Publish fake UAV GPS/PVA heartbeat; replace input fields with PX4 later."""
+        """Publish UAV GPS heartbeat, preferring PX4 DDS data when available."""
         if not self.accepted:
             return
 
         msg = UavGps()
-        msg.interface_version = 1
+        msg.interface_version = 2
         msg.uav_id = self.uav_id
         msg.seq = self.gps_seq
         msg.stamp_unix = time.time()
-        msg.latitude_deg = float(self.get_parameter('latitude_deg').value)
-        msg.longitude_deg = float(self.get_parameter('longitude_deg').value)
-        msg.altitude_m = float(self.get_parameter('altitude_m').value)
-        msg.vel_n_m_s = float(self.get_parameter('vel_n_m_s').value)
-        msg.vel_e_m_s = float(self.get_parameter('vel_e_m_s').value)
-        msg.vel_d_m_s = float(self.get_parameter('vel_d_m_s').value)
-        msg.heading_deg = float(self.get_parameter('heading_deg').value)
-        msg.heading_valid = True
-        msg.fix_type = 3
-        msg.satellites_used = 20
-        msg.eph_m = 0.5
-        msg.epv_m = 0.8
-        msg.s_variance_m_s = 0.05
-        msg.position_covariance = [
-            0.25, 0.0, 0.0,
-            0.0, 0.25, 0.0,
-            0.0, 0.0, 0.64,
-        ]
-        msg.covariance_type = UavGps.COVARIANCE_TYPE_DIAGONAL_KNOWN
-        msg.gps_ok = True
-        msg.velocity_valid = True
-        msg.covariance_valid = True
-        msg.source_type = 'fake'
+
+        px4_global_fresh = self.is_px4_fresh(
+            self.last_px4_global_position_monotonic
+        )
+        px4_local_fresh = self.is_px4_fresh(self.last_px4_local_position_monotonic)
+        px4_global = self.latest_px4_global_position if px4_global_fresh else None
+        px4_local = self.latest_px4_local_position if px4_local_fresh else None
+
+        if px4_global is None:
+            msg.latitude_deg = math.nan
+            msg.longitude_deg = math.nan
+            msg.altitude_m = math.nan
+            msg.eph_m = math.nan
+            msg.epv_m = math.nan
+            msg.gps_ok = False
+        else:
+            msg.latitude_deg = float(px4_global.lat)
+            msg.longitude_deg = float(px4_global.lon)
+            msg.altitude_m = float(px4_global.alt)
+            msg.eph_m = float(px4_global.eph)
+            msg.epv_m = float(px4_global.epv)
+            # Khi đã có VehicleGlobalPosition hợp lệ từ PX4, mặc định xem GPS OK.
+            msg.gps_ok = True
+
+        if px4_local is None:
+            msg.heading_deg = math.nan
+        else:
+            msg.heading_deg = math.degrees(float(px4_local.heading))
+
         self.gps_pub.publish(msg)
         # Không log từng GPS heartbeat; Dock log dữ liệu nhận theo chu kỳ.
         self.gps_seq += 1

@@ -82,17 +82,8 @@ float32 eph_m
 float32 epv_m
 float32 s_variance_m_s
 
-float64[9] position_covariance
-uint8 covariance_type
-
-uint8 COVARIANCE_TYPE_UNKNOWN=0
-uint8 COVARIANCE_TYPE_APPROXIMATED=1
-uint8 COVARIANCE_TYPE_DIAGONAL_KNOWN=2
-uint8 COVARIANCE_TYPE_KNOWN=3
-
 bool gps_ok
 bool velocity_valid
-bool covariance_valid
 
 string source_type
 EOF
@@ -154,6 +145,26 @@ bool gps_ok
 bool accepted_by_dock
 EOF
 
+cat > uav_ws/src/dock_interfaces/msg/UavGps.msg <<'EOF'
+# UAV GPS heartbeat sent to its dedicated Dock.
+# altitude_m is AMSL.
+
+uint8 interface_version
+string uav_id
+uint32 seq
+float64 stamp_unix
+
+float64 latitude_deg
+float64 longitude_deg
+float64 altitude_m
+
+float32 heading_deg
+
+float32 eph_m
+float32 epv_m
+bool gps_ok
+EOF
+
 cat > uav_ws/src/dock_interfaces/srv/ReserveDock.srv <<'EOF'
 string dock_id
 string uav_id
@@ -196,6 +207,7 @@ cat > uav_ws/src/uav_dock_client/package.xml <<'EOF'
 
   <depend>rclpy</depend>
   <depend>dock_interfaces</depend>
+  <depend>px4_msgs</depend>
   <depend>std_srvs</depend>
 
   <export>

@@ -10,6 +10,7 @@
 
   <depend>rclpy</depend>
   <depend>dock_interfaces</depend>
+  <depend>px4_msgs</depend>
   <depend>std_srvs</depend>
 
   <export>
