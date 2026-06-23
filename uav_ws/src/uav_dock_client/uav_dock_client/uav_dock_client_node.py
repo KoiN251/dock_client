@@ -24,6 +24,7 @@ from rclpy.qos import qos_profile_sensor_data
 from dock_interfaces.msg import DockBeacon, DockContact, DockState, UavGps, UavStatus
 from dock_interfaces.srv import ReleaseDock, ReserveDock
 from px4_msgs.msg import BatteryStatus, VehicleGlobalPosition, VehicleLocalPosition
+from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_srvs.srv import Trigger
 
 
@@ -56,6 +57,18 @@ class UavDockClientNode(Node):
         self.declare_parameter('altitude_m', 30.0)
         self.declare_parameter('heading_deg', 0.0)
         self.declare_parameter('px4_data_timeout_s', 5.0)
+
+        # Publish Dock GPS from DockBeacon as standard NavSatFix for other sources,
+        # for example TargetGpsOdom subscribing to target/gps.
+        # Default force-valid is kept true for bench/default-good GPS behaviour.
+        self.declare_parameter('target_gps_topic', '/target/gps')
+        self.declare_parameter('target_gps_frame_id', 'dock_gps')
+        self.declare_parameter('target_gps_publish_from_beacon', True)
+        self.declare_parameter('target_gps_force_valid', True)
+        self.declare_parameter('target_gps_use_beacon_covariance', True)
+        self.declare_parameter('target_gps_default_eph_m', 0.05)
+        self.declare_parameter('target_gps_default_epv_m', 0.10)
+
         self.declare_parameter(
             'px4_battery_topic',
             px4_out_topic('battery_status', BatteryStatus),
@@ -81,6 +94,24 @@ class UavDockClientNode(Node):
             self.get_parameter('heartbeat_log_period_s').value
         )
 
+        self.target_gps_topic = self.get_parameter('target_gps_topic').value
+        self.target_gps_frame_id = self.get_parameter('target_gps_frame_id').value
+        self.target_gps_publish_from_beacon = bool(
+            self.get_parameter('target_gps_publish_from_beacon').value
+        )
+        self.target_gps_force_valid = bool(
+            self.get_parameter('target_gps_force_valid').value
+        )
+        self.target_gps_use_beacon_covariance = bool(
+            self.get_parameter('target_gps_use_beacon_covariance').value
+        )
+        self.target_gps_default_eph_m = float(
+            self.get_parameter('target_gps_default_eph_m').value
+        )
+        self.target_gps_default_epv_m = float(
+            self.get_parameter('target_gps_default_epv_m').value
+        )
+
         # =========================
         # Runtime state
         # =========================
@@ -89,6 +120,7 @@ class UavDockClientNode(Node):
         self.request_in_flight = False
         self.last_request_time = 0.0
         self.last_beacon_log_monotonic = None
+        self.last_target_gps_log_monotonic = None
         self.last_contact_state = None
         self.latest_px4_battery_percent = None
         self.latest_px4_global_position = None
@@ -139,6 +171,11 @@ class UavDockClientNode(Node):
         self.gps_pub = self.create_publisher(
             UavGps,
             f'/uav/{self.uav_id}/gps',
+            10,
+        )
+        self.target_gps_pub = self.create_publisher(
+            NavSatFix,
+            self.target_gps_topic,
             10,
         )
 
@@ -197,6 +234,14 @@ class UavDockClientNode(Node):
             f'{self.get_parameter("px4_local_position_topic").value}'
         )
         self.get_logger().info(f'  px4_data_timeout_s={self.px4_data_timeout_s}')
+        self.get_logger().info(f'  target_gps_topic={self.target_gps_topic}')
+        self.get_logger().info(f'  target_gps_frame_id={self.target_gps_frame_id}')
+        self.get_logger().info(
+            f'  target_gps_publish_from_beacon={self.target_gps_publish_from_beacon}'
+        )
+        self.get_logger().info(
+            f'  target_gps_force_valid={self.target_gps_force_valid}'
+        )
 
     def is_px4_fresh(self, last_monotonic):
         if last_monotonic is None:
@@ -297,8 +342,13 @@ class UavDockClientNode(Node):
         if not resp.accepted:
             return
 
-        # Update topic theo response của Dock.
-        self.beacon_topic = resp.gps_topic
+        # # Update topic theo response của Dock.
+        # self.beacon_topic = resp.gps_topic
+        # self.contact_topic = resp.contact_topic
+        # Không gán beacon_topic bằng gps_topic
+# self.beacon_topic = resp.gps_topic
+
+        self.beacon_topic = f'/dock/{self.dock_id}/beacon'
         self.contact_topic = resp.contact_topic
 
         self.activate_dock_session(reason='reserve_response accepted=true')
@@ -399,6 +449,18 @@ class UavDockClientNode(Node):
           - Dock state
         """
         gps = msg.gps
+
+        # self.get_logger().warn(
+        #     f'[TARGET GPS DEBUG] enable={self.target_gps_publish_from_beacon} '
+        #     f'topic={self.target_gps_topic} '
+        #     f'dock_id={gps.dock_id} seq={gps.seq}'
+        # )
+
+        if self.target_gps_publish_from_beacon:
+            try:
+                self.publish_target_navsatfix_from_dock_gps(gps)
+            except Exception as exc:
+                self.get_logger().error(f'[TARGET GPS ERROR] {type(exc).__name__}: {exc}')
         now = time.monotonic()
         if (
             self.last_beacon_log_monotonic is None
@@ -423,6 +485,116 @@ class UavDockClientNode(Node):
                 f'available={state.available} reserved={state.reserved_uav_id} '
                 f'gps_ok={state.gps_ok} hardware_ok={state.hardware_ok} '
                 f'reason={state.reason}'
+            )
+
+    def dock_fix_type_to_navsat_status(self, fix_type: int) -> int:
+        """
+        Convert DockGps fix_type into NavSatStatus.
+
+        Default behaviour:
+          - Treat incoming Dock GPS as valid for this bench/default-good pipeline.
+          - If fix_type looks like an RTK/fixed quality, expose it as GBAS.
+          - Otherwise expose it as normal FIX.
+        """
+        if fix_type >= 4:
+            return NavSatStatus.STATUS_GBAS_FIX
+        return NavSatStatus.STATUS_FIX
+
+    def build_navsat_covariance_from_dock_gps(self, gps):
+        """
+        Build NavSatFix covariance from DockGps.
+
+        NavSatFix uses a 3x3 ENU covariance matrix, row-major.
+        DockGps eph/epv are metres, so covariance entries must be metres^2.
+        """
+        if (
+            self.target_gps_use_beacon_covariance
+            and hasattr(gps, 'covariance_valid')
+            and bool(gps.covariance_valid)
+            and hasattr(gps, 'position_covariance')
+            and len(gps.position_covariance) == 9
+        ):
+            cov = [float(value) for value in gps.position_covariance]
+            if all(math.isfinite(value) and value >= 0.0 for value in (cov[0], cov[4], cov[8])):
+                return cov, NavSatFix.COVARIANCE_TYPE_KNOWN
+
+        eph_m = float(getattr(gps, 'eph_m', math.nan))
+        epv_m = float(getattr(gps, 'epv_m', math.nan))
+
+        if not math.isfinite(eph_m) or eph_m < 0.0:
+            eph_m = self.target_gps_default_eph_m
+        if not math.isfinite(epv_m) or epv_m < 0.0:
+            epv_m = self.target_gps_default_epv_m
+
+        cov = [0.0] * 9
+        cov[0] = eph_m * eph_m
+        cov[4] = eph_m * eph_m
+        cov[8] = epv_m * epv_m
+
+        return cov, NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+
+    def publish_target_navsatfix_from_dock_gps(self, gps):
+        """
+        Convert DockGps received from DockBeacon into sensor_msgs/NavSatFix.
+
+        Output:
+          target/gps : sensor_msgs/msg/NavSatFix
+
+        This does not change the existing DockBeacon logging or UavGps/UavStatus
+        publishers; it only exposes Dock GPS in a standard ROS message type for
+        downstream nodes such as TargetGpsOdom.
+        """
+        out = NavSatFix()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = self.target_gps_frame_id
+
+        gps_valid = bool(getattr(gps, 'gps_ok', True))
+        if self.target_gps_force_valid:
+            gps_valid = True
+
+        if gps_valid:
+            out.status.status = self.dock_fix_type_to_navsat_status(
+                int(getattr(gps, 'fix_type', 0))
+            )
+        else:
+            out.status.status = NavSatStatus.STATUS_NO_FIX
+
+        out.status.service = (
+            NavSatStatus.SERVICE_GPS
+            | NavSatStatus.SERVICE_GLONASS
+            | getattr(NavSatStatus, 'SERVICE_COMPASS', 0)
+            | NavSatStatus.SERVICE_GALILEO
+        )
+
+        out.latitude = float(gps.latitude_deg)
+        out.longitude = float(gps.longitude_deg)
+        out.altitude = float(gps.altitude_m)
+
+        cov, cov_type = self.build_navsat_covariance_from_dock_gps(gps)
+        out.position_covariance = cov
+        out.position_covariance_type = cov_type
+
+        self.target_gps_pub.publish(out)
+
+        now = time.monotonic()
+        if (
+            self.last_target_gps_log_monotonic is None
+            or now - self.last_target_gps_log_monotonic >= self.heartbeat_log_period_s
+        ):
+            self.last_target_gps_log_monotonic = now
+            self.get_logger().info(
+                f'[TARGET GPS TX] topic={self.target_gps_topic}\n'
+                f'  source: dock_id={gps.dock_id} seq={gps.seq} '
+                f'gps_ok={getattr(gps, "gps_ok", True)} '
+                f'force_valid={self.target_gps_force_valid}\n'
+                f'  navsat_status: status={out.status.status} '
+                f'service={out.status.service}\n'
+                f'  position: lat={out.latitude:.7f} '
+                f'lon={out.longitude:.7f} alt={out.altitude:.3f}m\n'
+                f'  covariance: type={out.position_covariance_type} '
+                f'e={out.position_covariance[0]:.6f} '
+                f'n={out.position_covariance[4]:.6f} '
+                f'u={out.position_covariance[8]:.6f}'
             )
 
     def on_contact(self, msg: DockContact):
