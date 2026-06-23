@@ -27,6 +27,17 @@ from px4_msgs.msg import BatteryStatus, VehicleGlobalPosition, VehicleLocalPosit
 from std_srvs.srv import Trigger
 
 
+def get_message_name_version(msg_class):
+    """Return PX4 DDS topic suffix for versioned message definitions."""
+    if msg_class.MESSAGE_VERSION == 0:
+        return ''
+    return f'_v{msg_class.MESSAGE_VERSION}'
+
+
+def px4_out_topic(topic_name: str, msg_class) -> str:
+    return f'/fmu/out/{topic_name}{get_message_name_version(msg_class)}'
+
+
 class UavDockClientNode(Node):
     def __init__(self):
         super().__init__('uav_dock_client_node')
@@ -44,15 +55,18 @@ class UavDockClientNode(Node):
         self.declare_parameter('longitude_deg', 106.6995000)
         self.declare_parameter('altitude_m', 30.0)
         self.declare_parameter('heading_deg', 0.0)
-        self.declare_parameter('px4_data_timeout_s', 2.0)
-        self.declare_parameter('px4_battery_topic', '/fmu/out/battery_status')
+        self.declare_parameter('px4_data_timeout_s', 5.0)
+        self.declare_parameter(
+            'px4_battery_topic',
+            px4_out_topic('battery_status', BatteryStatus),
+        )
         self.declare_parameter(
             'px4_global_position_topic',
-            '/fmu/out/vehicle_global_position',
+            px4_out_topic('vehicle_global_position', VehicleGlobalPosition),
         )
         self.declare_parameter(
             'px4_local_position_topic',
-            '/fmu/out/vehicle_local_position',
+            px4_out_topic('vehicle_local_position', VehicleLocalPosition),
         )
 
         self.uav_id = self.get_parameter('uav_id').value
