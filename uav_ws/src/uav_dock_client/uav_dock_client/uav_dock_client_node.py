@@ -25,6 +25,7 @@ from dock_interfaces.msg import DockBeacon, DockContact, DockState, UavGps, UavS
 from dock_interfaces.srv import ReleaseDock, ReserveDock
 from px4_msgs.msg import BatteryStatus, VehicleGlobalPosition, VehicleLocalPosition
 from sensor_msgs.msg import NavSatFix, NavSatStatus
+from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 
@@ -133,6 +134,8 @@ class UavDockClientNode(Node):
         self.seq = 0
         self.gps_seq = 0
 
+        self.dock_uav_contact = False
+
         # Topic mặc định. Nếu service response trả topic khác thì sẽ update lại.
         self.state_topic = f'/dock/{self.dock_id}/state'
         self.beacon_topic = f'/dock/{self.dock_id}/beacon'
@@ -178,6 +181,12 @@ class UavDockClientNode(Node):
             self.target_gps_topic,
             10,
         )
+        self.dock_uav_contact_pub = self.create_publisher(
+            Bool,
+            '/dock_uav_contact',
+            10,
+        )
+
 
         # Subscribe DockState từ đầu.
         # Đây là source-of-truth để biết Dock đã reserve cho UAV chưa.
@@ -213,6 +222,11 @@ class UavDockClientNode(Node):
             self.publish_status, # Publish heartbeat/status của UAV
         )
         self.gps_timer = self.create_timer(1.0 / self.gps_hz, self.publish_gps)
+
+        self.dock_uav_contact_timer = self.create_timer(
+            0.2,
+            self.publish_dock_uav_contact,
+        )
 
         self.get_logger().info('UavDockClientNode started')
         self.get_logger().info(f'  uav_id={self.uav_id}')
@@ -448,19 +462,34 @@ class UavDockClientNode(Node):
           - Dock GPS
           - Dock state
         """
+
+        # Kiểm tra DockBeacon có hợp lệ không.
         gps = msg.gps
+        state = msg.state
 
-        # self.get_logger().warn(
-        #     f'[TARGET GPS DEBUG] enable={self.target_gps_publish_from_beacon} '
-        #     f'topic={self.target_gps_topic} '
-        #     f'dock_id={gps.dock_id} seq={gps.seq}'
-        # )
-
+        if not self.accepted:
+            return
+        if gps.dock_id != self.dock_id or state.dock_id != self.dock_id:
+            return
+        if state.reserved_uav_id != self.uav_id:
+            return
+        if state.state not in [DockState.RESERVED, DockState.CONTACTED]:
+            return
+        if not gps.gps_ok:
+            return
+        if not (
+            math.isfinite(gps.latitude_deg)
+            and math.isfinite(gps.longitude_deg)
+            and math.isfinite(gps.altitude_m)
+        ):
+            return
+# parameters target_gps_publish_from_beacon = True thì publish Dock GPS thành NavSatFix
         if self.target_gps_publish_from_beacon:
             try:
                 self.publish_target_navsatfix_from_dock_gps(gps)
             except Exception as exc:
                 self.get_logger().error(f'[TARGET GPS ERROR] {type(exc).__name__}: {exc}')
+# Log DockBeacon theo chu kỳ, không log từng message.
         now = time.monotonic()
         if (
             self.last_beacon_log_monotonic is None
@@ -496,7 +525,7 @@ class UavDockClientNode(Node):
           - If fix_type looks like an RTK/fixed quality, expose it as GBAS.
           - Otherwise expose it as normal FIX.
         """
-        if fix_type >= 4:
+        if fix_type >= 2: # can xem fix_type >= 2 là RTK hoặc GBAS
             return NavSatStatus.STATUS_GBAS_FIX
         return NavSatStatus.STATUS_FIX
 
@@ -549,8 +578,8 @@ class UavDockClientNode(Node):
         out.header.frame_id = self.target_gps_frame_id
 
         gps_valid = bool(getattr(gps, 'gps_ok', True))
-        if self.target_gps_force_valid:
-            gps_valid = True
+        # if self.target_gps_force_valid:
+        #     gps_valid = True
 
         if gps_valid:
             out.status.status = self.dock_fix_type_to_navsat_status(
@@ -607,6 +636,10 @@ class UavDockClientNode(Node):
             return
 
         contact = bool(msg.contact)
+
+        self.dock_uav_contact = contact
+        self.publish_dock_uav_contact()
+
         if contact != self.last_contact_state:
             self.last_contact_state = contact
             self.get_logger().info(
@@ -642,6 +675,11 @@ class UavDockClientNode(Node):
         # Không log từng status heartbeat; Dock vẫn giám sát timeout.
 
         self.seq += 1
+    # ham publish_dock_uav_contact
+    def publish_dock_uav_contact(self):
+        msg = Bool()
+        msg.data = bool(self.dock_uav_contact)
+        self.dock_uav_contact_pub.publish(msg)
 
     def publish_gps(self):
         """Publish UAV GPS heartbeat, preferring PX4 DDS data when available."""
